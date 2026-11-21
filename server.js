@@ -1,9 +1,9 @@
 'use strict';
-/* MAX STORE — serveur Node.js sans dépendance (Node 18+).
+/* NEKTA STORE — serveur Node.js sans dépendance (Node 18+).
    Lance :  node server.js
    Variables d'environnement (toutes optionnelles) :
      PORT, DATA_DIR, ADMIN_CODE (code admin initial), WHATSAPP, NATCASH, MONCASH,
-     GOOGLE_CLIENT_ID */
+     GOOGLE_CLIENT_ID, SITE_NAME (force le nom du site), GOOGLE_SITE_VERIFICATION (Search Console) */
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto'), https = require('https');
 const { baseProducts, extraProducts } = require('./seed.js');
 
@@ -34,7 +34,7 @@ function seed() {
   return {
     counter: 0, uc: 0, users: [], orders: [], proofs: [], txs: [], sells: [], workers: [], sessions: {},
     settings: { adminHash: hashPw(adminCode), whatsapp: process.env.WHATSAPP || '50900000000', natcash: process.env.NATCASH || '0000 0000', moncash: process.env.MONCASH || '0000 0000', natcashName: process.env.NATCASH_NAME || '', moncashName: process.env.MONCASH_NAME || '', minDeposit: parseInt(process.env.MIN_DEPOSIT) || 160 },
-    site: { name: 'MAX STORE', color: '#483D8B', logo: '', tagline: 'Ta boutique digitale, simple et fiable.' },
+    site: { name: 'NEKTA STORE', color: '#483D8B', logo: '', tagline: 'Ta boutique digitale, simple et fiable.' },
     champTitle: 'Championnat', champ: [], news: ['Ff2018', 'Efootball'],
     products: [...baseProducts(), ...extraProducts()], added: extraProducts().map(p => p.id)
   };
@@ -43,6 +43,9 @@ let db;
 try { db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch (e) { db = seed(); }
 for (const k of ['apps', 'notifs', 'withdrawals', 'bonuses', 'workers', 'sells', 'proofs']) db[k] = db[k] || [];
 db.settings.natcashName = db.settings.natcashName || ''; db.settings.moncashName = db.settings.moncashName || ''; db.settings.minDeposit = db.settings.minDeposit || 160;
+if (!db.site) db.site = { name: 'NEKTA STORE', color: '#483D8B', logo: '', tagline: 'Ta boutique digitale, simple et fiable.' };
+if (db.site.name === 'MAX STORE') db.site.name = 'NEKTA STORE';
+if (process.env.SITE_NAME) db.site.name = String(process.env.SITE_NAME).trim().slice(0, 40) || db.site.name;
 let timer = null;
 function flush() { timer = null; try { fs.writeFileSync(DB_FILE + '.tmp', JSON.stringify(db)); fs.renameSync(DB_FILE + '.tmp', DB_FILE); } catch (e) { console.error('Sauvegarde impossible :', e.message); } }
 function save() { if (!timer) timer = setTimeout(flush, 150); }
@@ -150,7 +153,8 @@ function bonusRule(p, opt) {
 }
 R.order = c => {
   const u = need(c); if (!u.phone) throw E(400, 'Ajoute ton numéro de téléphone.');
-  const manual = c.b.pay === 'manual';
+  if (c.b.pay === 'manual') throw E(400, "Fais d'abord un dépôt : tu peux commander seulement avec ton solde.");
+  const manual = false;
   const raw = Array.isArray(c.b.items) ? c.b.items.slice(0, 30) : []; if (!raw.length) throw E(400, 'Panier vide.');
   const items = raw.map(priceItem); const total = items.reduce((s, i) => s + i.price, 0);
   if (!manual) { if (u.bal < total) throw E(400, 'Solde insuffisant : il manque ' + fmt(total - u.bal) + ' HTG.'); u.bal -= total; tx(u, 'Achat', -total, items.map(i => i.name).join(', ')); }
@@ -300,6 +304,16 @@ const SEC = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-orig
 function send(res, code, body, headers = {}) { res.writeHead(code, { ...SEC, ...headers }); res.end(body); }
 const json = (res, code, obj) => send(res, code, JSON.stringify(obj), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
 function readBody(req, max = 8e6) { return new Promise((ok, ko) => { let n = 0; const ch = []; req.on('data', d => { n += d.length; if (n > max) { ko(E(413, 'Requête trop grosse.')); req.destroy(); } else ch.push(d); }); req.on('end', () => ok(Buffer.concat(ch).toString('utf8'))); req.on('error', ko); }); }
+function siteUrl(req) { const host = String(req.headers['x-forwarded-host'] || req.headers.host || 'localhost').split(',')[0].trim(); const proto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim(); return proto + '://' + host + '/'; }
+const escA = x => String(x).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+function renderIndex(req) {
+  let h = fs.readFileSync(INDEX, 'utf8'); const name = db.site.name; const url = siteUrl(req);
+  const desc = name + ' — boutique gaming en Haïti : top-up Free Fire, Robux, eFootball, abonnements Netflix et Prime Video, comptes de jeux. Paiement par NatCash et MonCash.';
+  const ld = JSON.stringify({ '@context': 'https://schema.org', '@type': 'Store', name, url, description: desc, areaServed: 'HT' }).replace(/</g, '\\u003c');
+  const meta = '<meta name="description" content="' + escA(desc) + '"><link rel="canonical" href="' + escA(url) + '"><meta property="og:type" content="website"><meta property="og:site_name" content="' + escA(name) + '"><meta property="og:title" content="' + escA(name) + ' — Boutique gaming Haïti"><meta property="og:description" content="' + escA(desc) + '"><meta property="og:url" content="' + escA(url) + '"><meta name="twitter:card" content="summary">'
+    + (process.env.GOOGLE_SITE_VERIFICATION ? '<meta name="google-site-verification" content="' + escA(process.env.GOOGLE_SITE_VERIFICATION) + '">' : '') + '<script type="application/ld+json">' + ld + '</script>';
+  return h.replace(/<title>.*?<\/title>/, () => '<title>' + escA(name) + ' — Boutique gaming Haïti</title>').replace('</head>', () => meta + '</head>');
+}
 function serveFile(res, file, cache) {
   fs.readFile(file, (e, d) => { if (e) return send(res, 404, 'Introuvable', { 'Content-Type': 'text/plain; charset=utf-8' }); send(res, 200, d, { 'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream', 'Cache-Control': cache }); });
 }
@@ -318,10 +332,12 @@ http.createServer(async (req, res) => {
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'Méthode non autorisée');
     if (p.startsWith('/uploads/')) { const f = path.join(UPLOADS, path.basename(p)); if (!/\.(png|jpe?g|webp|gif)$/i.test(f)) return send(res, 404, 'Introuvable'); return serveFile(res, f, 'public, max-age=31536000, immutable'); }
-    if (p === '/' || p === '/index.html') return serveFile(res, INDEX, 'no-cache');
+    if (p === '/robots.txt') return send(res, 200, 'User-agent: *\nAllow: /\nSitemap: ' + siteUrl(req) + 'sitemap.xml\n', { 'Content-Type': 'text/plain; charset=utf-8' });
+    if (p === '/sitemap.xml') return send(res, 200, '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>' + escA(siteUrl(req)) + '</loc><lastmod>' + new Date().toISOString().slice(0, 10) + '</lastmod></url></urlset>\n', { 'Content-Type': 'application/xml; charset=utf-8' });
+    if (p === '/' || p === '/index.html') return send(res, 200, req.method === 'HEAD' ? '' : renderIndex(req), { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
     return send(res, 404, 'Introuvable', { 'Content-Type': 'text/plain; charset=utf-8' });
   } catch (e) {
     if (!e.status) console.error(e);
     json(res, e.status || 500, { error: e.status ? e.message : 'Erreur serveur.' });
   }
-}).listen(PORT, () => console.log('MAX STORE prêt sur http://localhost:' + PORT + '  (données : ' + DATA_DIR + ')'));
+}).listen(PORT, () => console.log('NEKTA STORE prêt sur http://localhost:' + PORT + '  (données : ' + DATA_DIR + ')'));
